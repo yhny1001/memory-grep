@@ -6,8 +6,8 @@
   "js": "entry.js",
   "css": "style.css",
   "author": "yhny1001",
-  "version": "0.1.2",
-  "description": "Short-window memory compression with grep retrieval for chat and agent mode.",
+  "version": "0.1.3",
+  "description": "Short-window memory compression with grep retrieval. Unified policy works in both normal chat and TT Agent Mode (tool-aware).",
   "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {
     "activate": "init"

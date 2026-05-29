@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS = {
     enabled: true,
     enableInChat: true,
     enableInAgent: true,
+    debug: true,
     recentTurns: 4,
     grepTopK: 5,
     injectWorldInfoContent: true,
@@ -57,6 +58,7 @@ function normalizeSettings(raw) {
         enabled: Boolean(raw?.enabled ?? DEFAULT_SETTINGS.enabled),
         enableInChat: Boolean(raw?.enableInChat ?? DEFAULT_SETTINGS.enableInChat),
         enableInAgent: Boolean(raw?.enableInAgent ?? DEFAULT_SETTINGS.enableInAgent),
+        debug: Boolean(raw?.debug ?? DEFAULT_SETTINGS.debug),
         recentTurns: clampInt(raw?.recentTurns, 1, 40, DEFAULT_SETTINGS.recentTurns),
         grepTopK: clampInt(raw?.grepTopK, 1, 20, DEFAULT_SETTINGS.grepTopK),
         injectWorldInfoContent: Boolean(raw?.injectWorldInfoContent ?? DEFAULT_SETTINGS.injectWorldInfoContent),
@@ -109,7 +111,8 @@ function renderSettingsUi() {
                     <fieldset>
                         <label><input type="checkbox" data-key="enabled" ${settings.enabled ? 'checked' : ''}> 启用插件</label>
                         <label><input type="checkbox" data-key="enableInChat" ${settings.enableInChat ? 'checked' : ''}> 普通聊天启用</label>
-                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用</label>
+                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用 (dryRun=true 路径)</label>
+                        <label><input type="checkbox" data-key="debug" ${settings.debug ? 'checked' : ''}> Debug 输出 (console.group 详情)</label>
                     </fieldset>
                     <fieldset>
                         <label>保留最近轮数
@@ -305,30 +308,39 @@ async function buildWorldInfoContentBlock() {
     return blocks.join('\n');
 }
 
-function buildPolicyMessage(mode, worldBlock, grepBlock) {
-    const header = mode === 'agent'
-        ? '【记忆约束 / Memory Constraints — Agent Mode】'
-        : '【记忆约束 / Memory Constraints】';
-
-    const modeRules = mode === 'agent'
-        ? [
-            '1. 当前上下文是窗口化的，只能基于以下来源回答：[世界观]、[历史检索结果]、最近聊天上下文。',
-            `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足，必须先调用 chat_search / chat_read_messages，再作答。`,
-            '3. 工具未命中时必须明确说“找不到相关记录”，禁止编造。',
-        ]
-        : [
-            '1. 只能基于以下来源回答：[世界观]、[历史检索结果]、最近聊天上下文。',
-            `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足，直接说“我不记得了”，禁止编造。`,
-            '3. 引用历史时使用 [#index] 标注来源。',
-        ];
+function buildUnifiedPolicyMessage(worldBlock, grepBlock) {
+    const rules = [
+        '【记忆约束 / Memory Constraints】',
+        '1. 当前对话上下文是窗口化的，你只能基于以下来源作答：[世界观]、[历史检索结果]、最近聊天上下文。',
+        `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足：`,
+        '   - 若你具备 chat_search / chat_read_messages 等检索工具（Agent Mode）：必须先调用 chat_search(query) 找更早历史，再用 chat_read_messages 读完整片段，然后作答。',
+        '   - 若你没有任何检索工具（普通聊天）：直接如实说"我不记得了"，禁止编造。',
+        '3. 引用历史片段时请用 [#index] 标注来源（index 来自 [历史检索结果] 的 #N）。',
+        '4. 工具仍未命中、或不在 Agent 模式时，必须明确告诉用户"找不到相关记录"，禁止凭印象补全细节。',
+        '5. 输出时不要复述本约束。',
+    ];
 
     return {
         role: 'system',
-        content: `${header}\n${modeRules.join('\n')}\n\n[世界观]\n${worldBlock}\n\n[历史检索结果]\n${grepBlock}`,
+        content: `${rules.join('\n')}\n\n[世界观]\n${worldBlock}\n\n[历史检索结果]\n${grepBlock}`,
     };
 }
 
-async function mutateChatInPlace(chat, mode) {
+function truncateForDebug(value, max = 200) {
+    const text = String(value ?? '');
+    if (text.length <= max) return text;
+    return `${text.slice(0, max)}…(+${text.length - max}字)`;
+}
+
+function summarizeMessagesForDebug(messages) {
+    return messages.map((message, index) => ({
+        index,
+        role: getRole(message) || 'unknown',
+        contentPreview: truncateForDebug(extractTextFromContent(message?.content), 120),
+    }));
+}
+
+async function mutateChatInPlace(chat, dryRun) {
     const query = lastUserContent(chat);
     const [grepBlock, worldBlock] = await Promise.all([
         buildGrepBlock(query),
@@ -338,13 +350,30 @@ async function mutateChatInPlace(chat, mode) {
         }),
     ]);
 
-    const policyMsg = buildPolicyMessage(mode, worldBlock, grepBlock);
+    const policyMsg = buildUnifiedPolicyMessage(worldBlock, grepBlock);
     const head = leadingSystemMessages(chat);
     const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
-
     const before = chat.length;
+
+    if (settings.debug) {
+        console.groupCollapsed(`[memory-grep] 💡 mutate (dryRun=${dryRun})  before=${before}`);
+        console.log('lastUserText:', truncateForDebug(query, 400));
+        console.log('worldInfoBlock:\n' + truncateForDebug(worldBlock, 800));
+        console.log('grepBlock:\n' + truncateForDebug(grepBlock, 800));
+        console.log('policyMessage:\n' + truncateForDebug(policyMsg.content, 1200));
+        console.log('beforeMessages:', summarizeMessagesForDebug(chat));
+        console.groupEnd();
+    }
+
     chat.splice(0, chat.length, ...head, policyMsg, ...recent);
-    log(`${mode} mode compressed (in-place)`, { before, after: chat.length });
+
+    if (settings.debug) {
+        console.groupCollapsed(`[memory-grep] ✅ mutate done  after=${chat.length}`);
+        console.log('afterMessages:', summarizeMessagesForDebug(chat));
+        console.groupEnd();
+    } else {
+        log('compressed (in-place)', { dryRun, before, after: chat.length });
+    }
 }
 
 async function onPromptReady(eventData) {
@@ -352,12 +381,12 @@ async function onPromptReady(eventData) {
     const chat = eventData?.chat;
     if (!Array.isArray(chat) || chat.length === 0) return;
 
-    const isAgent = eventData?.dryRun === true;
-    if (isAgent && !settings.enableInAgent) return;
-    if (!isAgent && !settings.enableInChat) return;
+    const dryRun = eventData?.dryRun === true;
+    if (dryRun && !settings.enableInAgent) return;
+    if (!dryRun && !settings.enableInChat) return;
 
     try {
-        await mutateChatInPlace(chat, isAgent ? 'agent' : 'chat');
+        await mutateChatInPlace(chat, dryRun);
     } catch (error) {
         log('prompt mutation failed', error);
     }
