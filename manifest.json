@@ -6,7 +6,7 @@
   "js": "entry.js",
   "css": "style.css",
   "author": "yhny1001",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Memory compression for TauriTavern. Detects agent runtime via the agent-system extension-store flag (agentModeEnabled). Reports the real chat history scope (totalCount / windowStartIndex / windowLength via window.__TAURITAVERN__.api.chat.current.windowInfo()) inside the injected system message so the agent knows exactly which message indices are out-of-window and must be reached via chat.search. Agent mode injects a conditional chunked retrieval protocol — snippet-first, chat_read_messages with small max_chars (2-3k) ranges, never >= 8000. Chat mode keeps pre-grep + sentinel fallback.",
   "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {

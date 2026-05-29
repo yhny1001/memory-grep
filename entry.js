@@ -257,26 +257,30 @@ async function getChatWindowInfo() {
 
 function formatHistoryRangeBlock(windowInfo, plugin_window_count) {
     if (!windowInfo) {
-        return '[历史范围] 后端 windowInfo API 不可用，无法告知精确边界。如需早期历史请直接 chat.search。';
+        return '【历史范围】后端 windowInfo API 不可用，无法告知精确边界。如需早期历史请直接 chat.search。';
     }
     const total = Number(windowInfo.totalCount) || 0;
     const wsi = Number(windowInfo.windowStartIndex) || 0;
     const wl = Number(windowInfo.windowLength) || 0;
     const pluginCut = Number(plugin_window_count) || 0;
 
-    const out_of_window_count = Math.max(0, wsi);
+    // 真正可见给 agent 的是「plugin 砍完之后」剩下的 pluginCut 条，
+    // 这些是来自 TT 提供窗口 [wsi..wsi+wl-1] 的尾部 pluginCut 条。
+    const agent_first_visible_index = Math.max(0, total - pluginCut);
+    const out_of_window_count = agent_first_visible_index;
+
     const lines = [
         '【历史范围 / Chat History Scope】',
         `- 本对话真实总长度: ${total} 条 message（index 0..${Math.max(0, total - 1)}）。`,
         `- TT 后端给前端的窗口: index ${wsi}..${Math.max(0, wsi + wl - 1)}（共 ${wl} 条）。`,
-        `- 本插件再次裁剪后留在 prompt 里的对话条数: ${pluginCut}（仅最近 user/assistant）。`,
+        `- 本插件最终留给你的对话窗口: index ${agent_first_visible_index}..${Math.max(0, total - 1)}（共 ${pluginCut} 条 user/assistant）。`,
     ];
     if (out_of_window_count > 0) {
         lines.push(
-            `- ⚠️ index 0..${out_of_window_count - 1} 的 ${out_of_window_count} 条早期消息**不在 prompt 里**，但 chat.search 仍可搜到全部 ${total} 条；当用户问题涉及这部分时，请走"检索协议"。`,
+            `- ⚠️ index 0..${out_of_window_count - 1} 的 ${out_of_window_count} 条早期消息**不在你的 prompt 里**。chat.search 仍可搜到全部 ${total} 条；当用户问题可能涉及这部分时，请主动走"检索协议"。`,
         );
     } else {
-        lines.push('- 当前没有窗口外的早期消息，不需要检索历史。');
+        lines.push('- 当前所有历史都在窗口里，不需要检索。');
     }
     return lines.join('\n');
 }
@@ -621,5 +625,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.8 initialized (now reports true chat history scope via windowInfo so agent knows what is out-of-window)');
+    log('v0.1.9 initialized (history scope uses post-plugin-cut visible range, not raw TT windowStartIndex)');
 }
