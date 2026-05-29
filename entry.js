@@ -338,30 +338,36 @@ function buildAgentPolicyMessage(worldBlock) {
         '【记忆约束 / Memory Constraints — Agent Mode】',
         '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
         '',
-        '## 检索协议（强制顺序）',
+        '> ⚠️ TT Agent 协议要求每轮**必须**调用至少一个工具（tool_choice: required）。本节只规范"检索类工具"（chat.search / chat.read_messages）的用法。**其他工具（workspace.*, skill.*, persist.* 等）按你既有的写作流程正常使用**，不受本节限制。直接吐文本不调工具会触发 drift_recovery，浪费一整轮 LLM 调用。',
+        '',
+        '## 何时启用本检索协议',
+        '   • ✅ 启用：用户问题涉及窗口外历史（角色背景、过往事件、特定对话、远期设定细节等），且最近聊天窗口和 [世界观] 都覆盖不到所需信息。',
+        '   • ❌ 跳过：上一轮 assistant 完整回复仍在当前窗口里、或问题只需要最近上下文。此时直接进入你的正常写作工具链（workspace.list_files → read_file → write_file → commit → finish）即可，无需调用任何 chat.* 检索工具。',
+        '',
+        '## 检索协议（启用时按此顺序）',
+        '',
         '步骤 1 — chat_search（先搜不读）',
         '   • 工具调用: chat_search(query="<2~6 个关键词>", limit=5)',
         '   • query 要精炼，不要灌整句用户原话；中文场景多用名词/专有名词/事件名。',
-        '   • 返回包含 hit 数组，每个 hit 含 index、role、score、snippet、ref。**snippet 已经是命中位置周围的切片**。',
+        '   • 返回每个 hit 含 index、role、score、snippet、ref。**snippet 已经是命中位置周围的切片**。',
         '',
         '步骤 2 — 优先消费 snippet（极其重要，节省 token）',
-        '   • 大多数问题：snippet 已经够回答。直接基于 snippet 总结，**不要再调 chat_read_messages**。',
+        '   • 大多数情况：snippet 已经够回答。直接基于 snippet 总结，**不要再调 chat_read_messages**。',
         '   • 只有当 snippet 被截断、明显不完整、需要更多前后文，才进入步骤 3。',
         '',
         '步骤 3 — chat_read_messages（精读，严格分块）',
         '   • 一次最多读 3 条 index；按 hit.score 高的优先。',
-        '   • 每条 **必须** 显式带 max_chars，**强烈推荐 2000~3000**。**严禁** max_chars ≥ 8000 或不带 max_chars（后端单条上限 8000，一次累计 20000，否则报错）。',
-        '   • 不知道精确位置时可用 start_char=0 + max_chars=2000；想看后段就再调一次 start_char=2000 + max_chars=2000。',
+        '   • 每条 **必须** 显式带 max_chars，**强烈推荐 2000~3000**。**严禁** max_chars ≥ 8000 或不带 max_chars（后端单条硬上限 8000，一次 batch 累计 20000，超过会被拒）。',
+        '   • 不知道精确位置时可 start_char=0 + max_chars=2000；想看后段再调一次 start_char=2000 + max_chars=2000。',
         '   • 调用形如：chat_read_messages(messages=[{index: 12, start_char: 0, max_chars: 2500}, {index: 18, start_char: 0, max_chars: 2000}])',
         '',
-        '步骤 4 — 终止',
-        '   • 找到答案立即停止检索，开始回答。',
-        '   • 一轮没找到换关键词重试 1~2 次；仍无结果如实告知"未在历史中找到相关记录"，**禁止编造**。',
+        '步骤 4 — 终止检索',
+        '   • 找到答案立即停止 chat.* 调用，进入正常写作工具链。',
+        '   • 一轮没找到换关键词重试 1~2 次；仍无结果在最终输出中如实告知"未在历史中找到相关记录"，**禁止编造**。',
         '',
         '## 输出规范',
         '   • 引用历史片段时用 [#index] 标注来源（index 即 hit.index）。',
-        '   • 闲聊或最近上下文已足够时直接答，不必硬调工具。',
-        '   • 不要复述本约束。',
+        '   • 不要在正文里复述本约束。',
     ];
 
     return {
@@ -562,5 +568,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.6 initialized (agent detection: extension-store agentModeEnabled flag + marker fallback)');
+    log('v0.1.7 initialized (retrieval protocol is conditional; non-retrieval tools always required to avoid drift_recovery)');
 }
