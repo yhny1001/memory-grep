@@ -122,35 +122,90 @@ async function saveSettings() {
 }
 
 function renderSettingsUi() {
+    const PLUGIN_VERSION = '0.1.19';
+    const toggle = (key, text, hint = '') => `
+        <label class="mg-toggle">
+            <input type="checkbox" data-key="${key}" ${settings[key] ? 'checked' : ''}>
+            <span class="mg-toggle-track"><span class="mg-toggle-thumb"></span></span>
+            <span class="mg-toggle-text">${text}${hint ? ` <small>${hint}</small>` : ''}</span>
+        </label>
+    `;
+    const stepper = (key, min, max) => `
+        <div class="mg-number-stepper">
+            <button type="button" class="mg-stepper-btn" data-step="-1" data-target="${key}" aria-label="−">−</button>
+            <input type="number" class="text_pole" min="${min}" max="${max}" data-key="${key}" value="${settings[key]}">
+            <button type="button" class="mg-stepper-btn" data-step="1" data-target="${key}" aria-label="＋">＋</button>
+        </div>
+    `;
     return `
-        <div id="${UI_ROOT_ID}" class="memory-grep-settings">
+        <div id="${UI_ROOT_ID}" class="mg-root">
             <div class="inline-drawer">
                 <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>Memory Grep</b>
+                    <b><i class="fa-solid fa-database"></i> Memory Grep <span class="mg-version">v${PLUGIN_VERSION}</span></b>
                     <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                 </div>
-                <div class="inline-drawer-content">
-                    <fieldset>
-                        <label><input type="checkbox" data-key="enabled" ${settings.enabled ? 'checked' : ''}> 启用插件</label>
-                        <label><input type="checkbox" data-key="enableInChat" ${settings.enableInChat ? 'checked' : ''}> 普通聊天启用</label>
-                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用（自动通过 agent-system 扩展开关 agentModeEnabled 检测）</label>
-                        <label><input type="checkbox" data-key="debug" ${settings.debug ? 'checked' : ''}> Debug 输出 (console.group 详情)</label>
-                    </fieldset>
-                    <fieldset>
-                        <label>保留最近轮数
-                            <input type="number" min="1" max="40" data-key="recentTurns" value="${settings.recentTurns}">
-                        </label>
-                        <label>历史检索 TopK
-                            <input type="number" min="1" max="20" data-key="grepTopK" value="${settings.grepTopK}">
-                        </label>
-                        <label><input type="checkbox" data-key="injectWorldInfoContent" ${settings.injectWorldInfoContent ? 'checked' : ''}> 注入世界书正文（否则只注入目录）</label>
-                        <label>未命中占位文案
-                            <input type="text" data-key="sentinelOnMiss" value="${escapeHtml(settings.sentinelOnMiss)}">
-                        </label>
-                        <label>Agent 标记（逗号分隔，命中任一则视为 agent dryRun）
-                            <input type="text" data-key="agentMarkers" value="${escapeHtml(settings.agentMarkers.join(', '))}">
-                        </label>
-                    </fieldset>
+                <div class="inline-drawer-content mg-content">
+                    <p class="mg-tagline">
+                        <i class="fa-solid fa-bolt"></i>
+                        动态压缩 prompt，把窗口外历史按需 grep 注入 — 保留最近 N 轮真实对话，character preset 单独保留不占配额。
+                    </p>
+
+                    <section class="mg-section">
+                        <header class="mg-section-title">
+                            <i class="fa-solid fa-toggle-on"></i>
+                            <h4>启用范围</h4>
+                        </header>
+                        <div class="mg-toggle-list">
+                            ${toggle('enabled', '启用插件')}
+                            ${toggle('enableInChat', '普通聊天启用')}
+                            ${toggle('enableInAgent', 'Agent 模式启用', '(agent-system 扩展开关自动检测)')}
+                            ${toggle('debug', 'Debug 输出', '(F12 console.group 详情)')}
+                        </div>
+                    </section>
+
+                    <section class="mg-section">
+                        <header class="mg-section-title">
+                            <i class="fa-solid fa-sliders"></i>
+                            <h4>检索参数</h4>
+                        </header>
+                        <div class="mg-form-grid">
+                            <div class="mg-field">
+                                <span class="mg-field-label">保留最近轮数</span>
+                                <span class="mg-field-hint">user/assistant turn 数，最终保留 N×2 条对话</span>
+                                ${stepper('recentTurns', 1, 40)}
+                            </div>
+                            <div class="mg-field">
+                                <span class="mg-field-label">历史检索 Top-K</span>
+                                <span class="mg-field-hint">chat.search 候选数，过滤后取前 3 注入</span>
+                                ${stepper('grepTopK', 1, 20)}
+                            </div>
+                        </div>
+                        <div class="mg-divider"></div>
+                        ${toggle('injectWorldInfoContent', '注入世界书正文', '(否则只注入条目名)')}
+                    </section>
+
+                    <section class="mg-section">
+                        <header class="mg-section-title">
+                            <i class="fa-solid fa-pen-to-square"></i>
+                            <h4>文本设定</h4>
+                        </header>
+                        <div class="mg-field">
+                            <span class="mg-field-label">未命中占位文案</span>
+                            <span class="mg-field-hint">Chat Mode pre-grep 无结果时显示</span>
+                            <input type="text" class="text_pole mg-text" data-key="sentinelOnMiss" value="${escapeHtml(settings.sentinelOnMiss)}">
+                        </div>
+                        <div class="mg-field">
+                            <span class="mg-field-label">Agent 标记词</span>
+                            <span class="mg-field-hint">逗号分隔，命中任一视为 agent (fallback 检测)</span>
+                            <input type="text" class="text_pole mg-text" data-key="agentMarkers" value="${escapeHtml(settings.agentMarkers.join(', '))}">
+                        </div>
+                    </section>
+
+                    <footer class="mg-footer">
+                        <a href="https://github.com/yhny1001/memory-grep" target="_blank" rel="noopener">
+                            <i class="fa-brands fa-github"></i> yhny1001/memory-grep
+                        </a>
+                    </footer>
                 </div>
             </div>
         </div>
@@ -183,6 +238,25 @@ function mountSettingsUi() {
 
         settings = normalizeSettings(settings);
         await saveSettings();
+    });
+
+    root.on(`click${EVENT_NS}`, '.mg-stepper-btn', async (event) => {
+        const btn = /** @type {HTMLButtonElement} */ (event.currentTarget);
+        const target = String(btn.dataset.target || '').trim();
+        const step = Number(btn.dataset.step) || 0;
+        if (!target || !step) return;
+        const input = /** @type {HTMLInputElement | null} */ (root.find(`input[data-key="${target}"]`)[0]);
+        if (!input) return;
+        const min = Number(input.min);
+        const max = Number(input.max);
+        const next = Number(input.value || 0) + step;
+        const clamped = Math.max(
+            Number.isFinite(min) ? min : -Infinity,
+            Math.min(Number.isFinite(max) ? max : Infinity, next),
+        );
+        input.value = String(clamped);
+        // 触发原有 input handler 完成持久化
+        input.dispatchEvent(new Event('input', { bubbles: true }));
     });
 }
 

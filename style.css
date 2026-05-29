@@ -1,30 +1,366 @@
-#memory-grep-settings-root {
+/* ============================================================
+   memory-grep settings UI — pure CSS, themed via SmartTheme vars
+   ============================================================ */
+.mg-root {
+    --mg-border: color-mix(in srgb, var(--SmartThemeBorderColor) 82%, var(--SmartThemeBodyColor) 18%);
+    --mg-border-soft: color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+    --mg-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, transparent);
+    --mg-surface-raised: color-mix(in srgb, var(--SmartThemeBlurTintColor) 80%, var(--SmartThemeBodyColor) 6%);
+    --mg-surface-soft: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, transparent);
+    --mg-accent: var(--SmartThemeQuoteColor);
+    --mg-accent-soft: color-mix(in srgb, var(--mg-accent) 18%, transparent);
+    --mg-accent-strong: color-mix(in srgb, var(--mg-accent) 70%, var(--SmartThemeBodyColor) 30%);
+    --mg-text: var(--SmartThemeBodyColor);
+    --mg-text-muted: color-mix(in srgb, var(--SmartThemeBodyColor) 60%, transparent);
+    --mg-radius: 10px;
+    --mg-radius-sm: 6px;
+    --mg-transition: 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
     margin-top: 10px;
+    font-size: 0.92rem;
+    color: var(--mg-text);
 }
 
-#memory-grep-settings-root fieldset {
-    border: 1px solid var(--SmartThemeBorderColor, #555);
-    border-radius: 6px;
-    margin: 8px 0;
-    padding: 8px 10px;
-    display: grid;
+.mg-root,
+.mg-root * {
+    box-sizing: border-box;
+}
+
+.mg-root .inline-drawer-header b i {
+    margin-right: 6px;
+    color: var(--mg-accent);
+    opacity: 0.85;
+}
+
+.mg-version {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--mg-accent-soft);
+    color: var(--mg-accent-strong);
+    font-size: 0.7rem;
+    font-weight: 500;
+    vertical-align: middle;
+    letter-spacing: 0.02em;
+}
+
+.mg-content {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-top: 8px;
+}
+
+/* tagline */
+.mg-tagline {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0;
+    padding: 9px 12px;
+    border-left: 3px solid var(--mg-accent);
+    background: var(--mg-accent-soft);
+    border-radius: 0 var(--mg-radius-sm) var(--mg-radius-sm) 0;
+    color: var(--mg-text);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    opacity: 0.92;
+}
+
+.mg-tagline i {
+    margin-top: 2px;
+    color: var(--mg-accent);
+    flex-shrink: 0;
+}
+
+/* sections */
+.mg-section {
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--mg-border-soft);
+    border-radius: var(--mg-radius);
+    background: var(--mg-surface-raised);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.mg-section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--mg-border-soft);
+}
+
+.mg-section-title i {
+    color: var(--mg-accent);
+    font-size: 0.92rem;
+    opacity: 0.9;
+}
+
+.mg-section-title h4 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.mg-divider {
+    height: 1px;
+    margin: 0;
+    background: var(--mg-border-soft);
+    border: 0;
+}
+
+/* ============================================================
+   Toggle switch
+   ============================================================ */
+.mg-toggle-list {
+    display: flex;
+    flex-direction: column;
     gap: 8px;
 }
 
-#memory-grep-settings-root label {
+.mg-toggle {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 10px;
-    font-size: 0.92rem;
+    cursor: pointer;
+    user-select: none;
+    margin: 0;
+    padding: 4px 2px;
+    border-radius: var(--mg-radius-sm);
+    transition: background var(--mg-transition);
 }
 
-#memory-grep-settings-root input[type='number'],
-#memory-grep-settings-root input[type='text'] {
-    flex: 0 0 180px;
-    max-width: 220px;
+.mg-toggle:hover {
+    background: var(--mg-surface-soft);
 }
 
-#memory-grep-settings-root input[type='checkbox'] {
-    margin-right: 8px;
+.mg-toggle input[type='checkbox'] {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+    margin: 0;
+}
+
+.mg-toggle-track {
+    position: relative;
+    flex: 0 0 38px;
+    width: 38px;
+    height: 20px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 18%, transparent);
+    border: 1px solid var(--mg-border-soft);
+    transition: background var(--mg-transition), border-color var(--mg-transition);
+}
+
+.mg-toggle-thumb {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--SmartThemeBodyColor);
+    opacity: 0.65;
+    transition: transform var(--mg-transition), opacity var(--mg-transition), background var(--mg-transition);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.mg-toggle input[type='checkbox']:checked + .mg-toggle-track {
+    background: var(--mg-accent);
+    border-color: var(--mg-accent);
+}
+
+.mg-toggle input[type='checkbox']:checked + .mg-toggle-track .mg-toggle-thumb {
+    transform: translateX(18px);
+    opacity: 1;
+    background: #fff;
+}
+
+.mg-toggle input[type='checkbox']:focus-visible + .mg-toggle-track {
+    box-shadow: 0 0 0 3px var(--mg-accent-soft);
+}
+
+.mg-toggle-text {
+    flex: 1;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.mg-toggle-text small {
+    color: var(--mg-text-muted);
+    font-size: 0.78em;
+    margin-left: 4px;
+}
+
+/* ============================================================
+   Field grid + label/hint
+   ============================================================ */
+.mg-form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+}
+
+.mg-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.mg-field-label {
+    font-weight: 600;
+    font-size: 0.88rem;
+    line-height: 1.3;
+}
+
+.mg-field-hint {
+    color: var(--mg-text-muted);
+    font-size: 0.74rem;
+    line-height: 1.4;
+}
+
+/* ============================================================
+   Number stepper (custom +/− buttons)
+   ============================================================ */
+.mg-number-stepper {
+    display: grid;
+    grid-template-columns: 32px 1fr 32px;
+    align-items: stretch;
+    margin-top: 6px;
+    border: 1px solid var(--mg-border);
+    border-radius: var(--mg-radius-sm);
+    background: var(--mg-surface);
+    overflow: hidden;
+    transition: border-color var(--mg-transition), box-shadow var(--mg-transition);
+}
+
+.mg-number-stepper:focus-within {
+    border-color: var(--mg-accent);
+    box-shadow: 0 0 0 3px var(--mg-accent-soft);
+}
+
+.mg-stepper-btn {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--mg-text-muted);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--mg-transition), color var(--mg-transition);
+    display: grid;
+    place-items: center;
+    padding: 0;
+}
+
+.mg-stepper-btn:hover {
+    background: var(--mg-accent-soft);
+    color: var(--mg-accent-strong);
+}
+
+.mg-stepper-btn:active {
+    transform: scale(0.92);
+}
+
+.mg-number-stepper input[type='number'] {
+    width: 100%;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.95rem;
+    color: var(--mg-text);
+    -moz-appearance: textfield;
+    appearance: textfield;
+    padding: 6px 4px;
+}
+
+.mg-number-stepper input[type='number']:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+.mg-number-stepper input[type='number']::-webkit-inner-spin-button,
+.mg-number-stepper input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+/* ============================================================
+   Text input
+   ============================================================ */
+.mg-root input.text_pole.mg-text {
+    width: 100%;
+    margin-top: 6px;
+    border-radius: var(--mg-radius-sm) !important;
+    border: 1px solid var(--mg-border) !important;
+    background: var(--mg-surface) !important;
+    transition: border-color var(--mg-transition), box-shadow var(--mg-transition);
+}
+
+.mg-root input.text_pole.mg-text:focus {
+    border-color: var(--mg-accent) !important;
+    box-shadow: 0 0 0 3px var(--mg-accent-soft);
+}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.mg-footer {
+    margin-top: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--mg-border-soft);
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    font-size: 0.78rem;
+}
+
+.mg-footer a {
+    color: var(--mg-text-muted);
+    text-decoration: none;
+    transition: color var(--mg-transition);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.mg-footer a:hover {
+    color: var(--mg-accent);
+}
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+@media (max-width: 480px) {
+    .mg-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .mg-section {
+        padding: 10px 12px;
+    }
+}
+
+/* ============================================================
+   Reduce motion
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+    .mg-root *,
+    .mg-toggle-thumb,
+    .mg-stepper-btn,
+    .mg-number-stepper,
+    .mg-text {
+        transition-duration: 0.01ms !important;
+    }
 }
