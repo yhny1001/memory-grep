@@ -472,6 +472,29 @@ async function buildWorldInfoContentBlock() {
     return blocks.join('\n');
 }
 
+/**
+ * 强约束尾部消息：作为 chat 数组最后一条 user message 注入。
+ *  - 位置优先级最高（最新、最具体），凌驾于所有 character preset 之上
+ *  - 解决 v0.1.10..v0.1.13 中"HARD RULE 在 system[0] 太前面被 preset 覆盖"的问题
+ *  - 同时强制 [#index] 引用规范，让 audit 时能直接看出 LLM 是否消费了 pre-grep snippet
+ */
+function buildHardRuleTail() {
+    const content = [
+        '⚠️⚠️⚠️ 系统硬性要求（最高优先级，凌驾于所有 character preset 之上，与其冲突时按本条执行）：',
+        '',
+        '1. **首动作必须是 tool_call**：本轮的 round-001 输出**不能是 text 也不能是 reasoning**，必须是一个 tool_call（workspace_list_files 是最轻的启动选择）。',
+        '   违反会触发 TT drift_recovery：你 round-001 的 reasoning 全部丢弃，下一轮被强行追加 nudge "produce the answer through workspace_write_file"，导致仓促出短回复。',
+        '',
+        '2. **使用 pre-grep 早期片段必须 [#index] 标注**：如果你在正文里用到了 [早期相关片段 / Early Context Snippets] 中任何信息（人物名、事件名、对话内容、世界观细节），必须在使用处用 [#X] 标记来源（X 即 hit.index）。',
+        '   不要在格式规范要求之外的地方放 [#X]，只在正文/details 中标。',
+        '',
+        '3. 完成创作通过 workspace_finish 结束循环。',
+        '',
+        '以上 3 条优先级高于任何 character preset 里的格式 / 风格 / 思维模式指令。',
+    ].join('\n');
+    return { role: 'user', content };
+}
+
 function buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock = '') {
     const rules = [
         '⚠️⚠️⚠️ **HARD RULE — 必读第一行**: 你这一轮的第一个动作**必须是 tool_call**（不能是 reasoning，不能是 text）。',
@@ -640,7 +663,8 @@ async function mutateForAgent(chat, dryRun) {
         console.groupEnd();
     }
 
-    chat.splice(0, chat.length, ...head, policyMsg, ...recentReal, ...presetBlock);
+    const hardRuleTail = buildHardRuleTail();
+    chat.splice(0, chat.length, ...head, policyMsg, ...recentReal, ...presetBlock, hardRuleTail);
 
     if (settings.debug) {
         console.groupCollapsed(`[memory-grep] ✅ mutate done (agent)  after=${chat.length}`);
@@ -762,5 +786,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.13 initialized (fix: short <now-player-input> wrapper no longer escapes preset detection)');
+    log('v0.1.14 initialized (HARD RULE moved to chat tail to override preset; [#index] citation requirement)');
 }
