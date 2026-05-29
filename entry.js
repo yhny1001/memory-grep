@@ -359,44 +359,34 @@ const MIN_QUERY_LEN_FOR_PREGREP = 5;
  */
 async function buildEarlyContextBlock(query, windowInfo, recentRealCount) {
     const trimmed = String(query || '').trim();
-    const banner = '【早期相关片段 / Early Context Snippets — plugin pre-grep】';
-
     if (trimmed.length < MIN_QUERY_LEN_FOR_PREGREP) {
-        return `${banner}\n(skipped: query too short, len=${trimmed.length} < ${MIN_QUERY_LEN_FOR_PREGREP})`;
+        return ''; // hi / 嗯 / 输出 等短反馈不触发 pre-grep
     }
-    if (!windowInfo) {
-        return `${banner}\n(skipped: windowInfo unavailable)`;
-    }
+    if (!windowInfo) return '';
     const total = Number(windowInfo.totalCount) || 0;
     const visibleStart = Math.max(0, total - Number(recentRealCount || 0));
-    if (visibleStart === 0) {
-        return `${banner}\n(skipped: total=${total} ≤ recentRealCount=${recentRealCount}, no out-of-window history)`;
-    }
+    if (visibleStart === 0) return ''; // 全部历史都在窗口里，不需要早期片段
 
     let hits;
     try {
         hits = await getChatSearchHits(trimmed);
     } catch (error) {
         log('pre-grep failed', error);
-        return `${banner}\n(skipped: chat.search threw — ${String(error?.message || error)})`;
+        return '';
     }
-    if (!Array.isArray(hits) || hits.length === 0) {
-        return `${banner}\n(searched: query="${trimmed.slice(0, 80)}", visibleStart=${visibleStart}, but chat.search returned 0 hits)`;
-    }
+    if (!Array.isArray(hits) || hits.length === 0) return '';
 
-    const allHitIndices = hits.map((h) => Number(h?.index)).filter(Number.isFinite);
+    // 只保留 out-of-window 的 hit
     const outOfWindowHits = hits.filter((h) => {
         const idx = Number(h?.index);
         return Number.isFinite(idx) && idx < visibleStart;
     });
-    if (outOfWindowHits.length === 0) {
-        return `${banner}\n(searched: query="${trimmed.slice(0, 80)}", visibleStart=${visibleStart}, hits=${hits.length} but all in-window (index list: ${allHitIndices.join(', ')}). No early context to add.)`;
-    }
+    if (outOfWindowHits.length === 0) return '';
 
     const top = outOfWindowHits.slice(0, 3);
     const lines = [
-        banner,
-        `针对用户当前输入「${trimmed.slice(0, 80)}」对窗口外 index 0..${visibleStart - 1} 做了 chat.search（共 ${hits.length} 命中，其中 ${outOfWindowHits.length} 在窗口外）：`,
+        '【早期相关片段 / Early Context Snippets — plugin pre-grep】',
+        `针对用户当前输入「${trimmed.slice(0, 80)}」对窗口外 index 0..${visibleStart - 1} 做了 chat.search，命中片段（按 score 排序）：`,
     ];
     top.forEach((h, i) => {
         const idx = Number.isFinite(h?.index) ? h.index : '?';
@@ -504,8 +494,8 @@ function buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock = '
         'plugin 还自动用本轮用户输入跑了 chat.search，结果在 [早期相关片段]。',
         '',
         '* **优先消费 [早期相关片段] 的 snippet**，绝大多数任务都够用。',
-        '* snippet 被截断 / 需要更长上下文：chat_read_messages([{index:<#>, start_char:0, max_chars:2500}])。',
-        '  单条 ≤3000，一批累计 ≤20000，禁止裸读整条（后端硬上限 8000）。',
+        '* snippet 被截断 / 需要更长上下文：chat_read_messages([{index:<#>, start_char:0, max_chars:8000}])。',
+        '  **单条 max_chars 硬上限 8000**（后端约束，超过会被拒），一批累计 ≤20000。',
         '* [早期相关片段] 没命中你要的：重新 chat_search(query="<2~6 关键词>", limit=5)。query 用名词/事件名，不要灌原话。',
         '* 历史里没有就如实说"未在历史中找到"，禁止编造。',
         '',
@@ -757,5 +747,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.17 initialized (pre-grep ALWAYS emits a banner — skip reason or hits — so audit can tell why nothing was injected)');
+    log('v0.1.18 initialized (chat_read_messages max_chars aligned to backend hard limit 8000)');
 }
