@@ -25,6 +25,15 @@ function log(message, payload) {
     console.log(`[memory-grep] ${message}`, payload);
 }
 
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function getStContext() {
     return window.SillyTavern?.getContext?.() ?? null;
 }

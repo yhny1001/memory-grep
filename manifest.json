@@ -5,10 +5,10 @@
   "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "author": "yepeijin-s",
-  "version": "0.1.0",
+  "author": "yhny1001",
+  "version": "0.1.1",
   "description": "Short-window memory compression with grep retrieval for chat and agent mode.",
-  "homePage": "https://github.com/yepeijin-s/memory-grep",
+  "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {
     "activate": "init"
   }
