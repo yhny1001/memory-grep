@@ -242,6 +242,45 @@ async function getChatSearchHits(query) {
     });
 }
 
+async function getChatWindowInfo() {
+    const current = getTtApi()?.chat?.current;
+    if (typeof current?.windowInfo !== 'function') {
+        return null;
+    }
+    try {
+        return await current.windowInfo();
+    } catch (error) {
+        log('getChatWindowInfo failed', error);
+        return null;
+    }
+}
+
+function formatHistoryRangeBlock(windowInfo, plugin_window_count) {
+    if (!windowInfo) {
+        return '[历史范围] 后端 windowInfo API 不可用，无法告知精确边界。如需早期历史请直接 chat.search。';
+    }
+    const total = Number(windowInfo.totalCount) || 0;
+    const wsi = Number(windowInfo.windowStartIndex) || 0;
+    const wl = Number(windowInfo.windowLength) || 0;
+    const pluginCut = Number(plugin_window_count) || 0;
+
+    const out_of_window_count = Math.max(0, wsi);
+    const lines = [
+        '【历史范围 / Chat History Scope】',
+        `- 本对话真实总长度: ${total} 条 message（index 0..${Math.max(0, total - 1)}）。`,
+        `- TT 后端给前端的窗口: index ${wsi}..${Math.max(0, wsi + wl - 1)}（共 ${wl} 条）。`,
+        `- 本插件再次裁剪后留在 prompt 里的对话条数: ${pluginCut}（仅最近 user/assistant）。`,
+    ];
+    if (out_of_window_count > 0) {
+        lines.push(
+            `- ⚠️ index 0..${out_of_window_count - 1} 的 ${out_of_window_count} 条早期消息**不在 prompt 里**，但 chat.search 仍可搜到全部 ${total} 条；当用户问题涉及这部分时，请走"检索协议"。`,
+        );
+    } else {
+        lines.push('- 当前没有窗口外的早期消息，不需要检索历史。');
+    }
+    return lines.join('\n');
+}
+
 async function buildGrepBlock(query) {
     const trimmed = String(query || '').trim();
     if (!trimmed) return settings.sentinelOnMiss;
@@ -333,10 +372,12 @@ async function buildWorldInfoContentBlock() {
     return blocks.join('\n');
 }
 
-function buildAgentPolicyMessage(worldBlock) {
+function buildAgentPolicyMessage(worldBlock, historyBlock) {
     const rules = [
         '【记忆约束 / Memory Constraints — Agent Mode】',
         '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
+        '',
+        historyBlock,
         '',
         '> ⚠️ TT Agent 协议要求每轮**必须**调用至少一个工具（tool_choice: required）。本节只规范"检索类工具"（chat.search / chat.read_messages）的用法。**其他工具（workspace.*, skill.*, persist.* 等）按你既有的写作流程正常使用**，不受本节限制。直接吐文本不调工具会触发 drift_recovery，浪费一整轮 LLM 调用。',
         '',
@@ -376,13 +417,15 @@ function buildAgentPolicyMessage(worldBlock) {
     };
 }
 
-function buildChatPolicyMessage(worldBlock, grepBlock) {
+function buildChatPolicyMessage(worldBlock, grepBlock, historyBlock) {
     const rules = [
         '【记忆约束 / Memory Constraints】',
         '1. 当前对话上下文已被压缩，你只能基于以下来源作答：[世界观]、[历史检索结果]、最近聊天上下文。',
         `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足，直接如实说"我不记得了"，禁止编造。`,
         '3. 引用历史片段时请用 [#index] 标注来源（index 来自 [历史检索结果] 的 #N）。',
         '4. 输出时不要复述本约束。',
+        '',
+        historyBlock,
     ];
 
     return {
@@ -441,21 +484,27 @@ function logMutateHeader(mode, dryRun, before, extras) {
 }
 
 async function mutateForAgent(chat, dryRun) {
-    const worldBlock = await buildWorldInfoContentBlock().catch((error) => {
-        log('build world info block failed', error);
-        return '(世界书读取失败)';
-    });
-
-    const policyMsg = buildAgentPolicyMessage(worldBlock);
     const head = leadingSystemMessages(chat);
     const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
     const before = chat.length;
 
+    const [worldBlock, windowInfo] = await Promise.all([
+        buildWorldInfoContentBlock().catch((error) => {
+            log('build world info block failed', error);
+            return '(世界书读取失败)';
+        }),
+        getChatWindowInfo(),
+    ]);
+    const historyBlock = formatHistoryRangeBlock(windowInfo, recent.length);
+    const policyMsg = buildAgentPolicyMessage(worldBlock, historyBlock);
+
     if (settings.debug) {
         logMutateHeader('agent', dryRun, before, {
             note: 'agent path: no pre-grep; agent will self-issue chat_search/chat_read_messages',
+            windowInfo,
+            historyBlock,
             worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
-            policyMessage: '\n' + truncateForDebug(policyMsg.content, 1500),
+            policyMessage: '\n' + truncateForDebug(policyMsg.content, 2000),
             beforeMessages: summarizeMessagesForDebug(chat),
         });
         console.groupEnd();
@@ -474,25 +523,29 @@ async function mutateForAgent(chat, dryRun) {
 
 async function mutateForChat(chat, dryRun) {
     const query = lastUserContent(chat);
-    const [grepBlock, worldBlock] = await Promise.all([
+    const head = leadingSystemMessages(chat);
+    const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
+    const before = chat.length;
+
+    const [grepBlock, worldBlock, windowInfo] = await Promise.all([
         buildGrepBlock(query),
         buildWorldInfoContentBlock().catch((error) => {
             log('build world info block failed', error);
             return '(世界书读取失败)';
         }),
+        getChatWindowInfo(),
     ]);
-
-    const policyMsg = buildChatPolicyMessage(worldBlock, grepBlock);
-    const head = leadingSystemMessages(chat);
-    const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
-    const before = chat.length;
+    const historyBlock = formatHistoryRangeBlock(windowInfo, recent.length);
+    const policyMsg = buildChatPolicyMessage(worldBlock, grepBlock, historyBlock);
 
     if (settings.debug) {
         logMutateHeader('chat', dryRun, before, {
             lastUserText: truncateForDebug(query, 400),
+            windowInfo,
+            historyBlock,
             worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
             grepBlock: '\n' + truncateForDebug(grepBlock, 800),
-            policyMessage: '\n' + truncateForDebug(policyMsg.content, 1200),
+            policyMessage: '\n' + truncateForDebug(policyMsg.content, 1500),
             beforeMessages: summarizeMessagesForDebug(chat),
         });
         console.groupEnd();
@@ -568,5 +621,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.7 initialized (retrieval protocol is conditional; non-retrieval tools always required to avoid drift_recovery)');
+    log('v0.1.8 initialized (now reports true chat history scope via windowInfo so agent knows what is out-of-window)');
 }
