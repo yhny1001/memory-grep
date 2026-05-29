@@ -7,7 +7,7 @@
   "css": "style.css",
   "author": "yhny1001",
   "version": "0.1.18",
-  "description": "Memory compression for TauriTavern. Detects agent runtime via the agent-system extension-store flag (agentModeEnabled). Reports the real chat history scope (totalCount / windowStartIndex / windowLength via window.__TAURITAVERN__.api.chat.current.windowInfo()) inside the injected system message so the agent knows exactly which message indices are out-of-window and must be reached via chat.search. Agent mode injects a conditional chunked retrieval protocol — snippet-first, chat_read_messages with small max_chars (2-3k) ranges, never >= 8000. Chat mode keeps pre-grep + sentinel fallback.",
+  "description": "Dynamic memory for TauriTavern. Auto-compresses prompt to the most recent N real-dialog turns (character preset blocks like <overall-rules> / <writing-guidelines> / <now-player-input> are isolated from the recentTurns quota). Each request also runs a smart pre-grep on the latest user input via chat.current.handle().searchMessages, filters hits to the out-of-window range, and injects up to top-3 snippets into a 【早期相关片段】 block in system. Skips silently when query is too short or all hits are already in-window. Agent Mode additionally appends a [#X] citation requirement and a slim retrieval protocol that lets the agent self-issue chat.search / chat.read_messages (max_chars hard limit 8000 per backend) when the pre-grep snippet is not enough.",
   "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {
     "activate": "init"
