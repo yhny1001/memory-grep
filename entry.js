@@ -473,47 +473,30 @@ async function buildWorldInfoContentBlock() {
 }
 
 /**
- * 强约束尾部消息：作为 chat 数组最后一条 user message 注入。
- *  - 位置优先级最高（最新、最具体），凌驾于所有 character preset 之上
- *  - 解决 v0.1.10..v0.1.13 中"HARD RULE 在 system[0] 太前面被 preset 覆盖"的问题
- *  - 同时强制 [#index] 引用规范，让 audit 时能直接看出 LLM 是否消费了 pre-grep snippet
+ * 末尾 audit 引用规范（v0.1.15）：放在 chat 末尾，凌驾 preset 优先级。
+ *  - 仅保留 [#index] 引用规范，让 audit 能直接看出 LLM 是否真的消费了 pre-grep 注入的 snippet
+ *  - drift 防御已撤回（参见 v0.1.15 commit message），如果你不需要 audit 信号也可直接不调用此函数
  */
 function buildHardRuleTail() {
     const content = [
-        '⚠️⚠️⚠️ 系统硬性要求（最高优先级，凌驾于所有 character preset 之上，与其冲突时按本条执行）：',
-        '',
-        '1. **首动作必须是 tool_call**：本轮的 round-001 输出**不能是 text 也不能是 reasoning**，必须是一个 tool_call（workspace_list_files 是最轻的启动选择）。',
-        '   违反会触发 TT drift_recovery：你 round-001 的 reasoning 全部丢弃，下一轮被强行追加 nudge "produce the answer through workspace_write_file"，导致仓促出短回复。',
-        '',
-        '2. **使用 pre-grep 早期片段必须 [#index] 标注**：如果你在正文里用到了 [早期相关片段 / Early Context Snippets] 中任何信息（人物名、事件名、对话内容、世界观细节），必须在使用处用 [#X] 标记来源（X 即 hit.index）。',
-        '   不要在格式规范要求之外的地方放 [#X]，只在正文/details 中标。',
-        '',
-        '3. 完成创作通过 workspace_finish 结束循环。',
-        '',
-        '以上 3 条优先级高于任何 character preset 里的格式 / 风格 / 思维模式指令。',
+        '【引用规范 / Citation Requirement — plugin audit signal】',
+        '如果你在本轮正文里用到了 [早期相关片段 / Early Context Snippets] 中的任何信息（人物名、事件名、对话内容、世界观细节），必须在使用处用 [#X] 标记来源（X 即 hit.index）。',
+        '只在正文 / details 中标，不要塞到格式规范字段里。',
+        '没用 pre-grep 片段就不需要标。',
     ].join('\n');
     return { role: 'user', content };
 }
 
 function buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock = '') {
     const rules = [
-        '⚠️⚠️⚠️ **HARD RULE — 必读第一行**: 你这一轮的第一个动作**必须是 tool_call**（不能是 reasoning，不能是 text）。',
-        '即使你需要长篇思考与创作规划，也**先**调用一个轻量工具启动流程（例如 workspace_list_files），',
-        '再在后续轮里继续深度推理。违反会触发 TT drift_recovery，',
-        '你 round-001 的完整 reasoning（包括你对 character preset 的所有解读、剧情规划、维度标签）',
-        '将被**全部丢弃**，并在 prompt 末尾追加一条 nudge "produce the answer through workspace_write_file" — ',
-        '这条 nudge 不包含 character preset 的任何要求，你会在仓促状态下直接出短回复，严重降低输出质量。',
-        '',
         '【记忆约束 / Memory Constraints — Agent Mode】',
         '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
         '',
         historyBlock,
         '',
-        '> ⚠️ TT Agent 协议要求每轮**必须**调用至少一个工具（tool_choice: required）。本节只规范"检索类工具"（chat.search / chat.read_messages）的用法。**其他工具（workspace.*, skill.*, persist.* 等）按你既有的写作流程正常使用**，不受本节限制。直接吐文本不调工具会触发 drift_recovery，浪费一整轮 LLM 调用。',
-        '',
         '## 何时启用本检索协议',
-        '   • ✅ 启用：用户问题涉及窗口外历史（角色背景、过往事件、特定对话、远期设定细节等），且最近聊天窗口和 [世界观] 都覆盖不到所需信息。',
-        '   • ❌ 跳过：上一轮 assistant 完整回复仍在当前窗口里、或问题只需要最近上下文。此时直接进入你的正常写作工具链（workspace.list_files → read_file → write_file → commit → finish）即可，无需调用任何 chat.* 检索工具。',
+        '   • ✅ 启用：用户问题涉及窗口外历史（角色背景、过往事件、特定对话、远期设定细节等），且最近聊天窗口、[早期相关片段] 和 [世界观] 都覆盖不到所需信息。',
+        '   • ❌ 跳过：plugin 注入的 [早期相关片段] 已经够、上一轮 assistant 完整回复仍在窗口里、或问题只需要最近上下文。此时直接进入你的正常工具链即可，无需调用任何 chat.* 检索工具。',
         '',
         '## 检索协议（启用时按此顺序）',
         '',
@@ -786,5 +769,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.14 initialized (HARD RULE moved to chat tail to override preset; [#index] citation requirement)');
+    log('v0.1.15 initialized (drift defense removed; focus on grep correctness + [#X] audit signal)');
 }
