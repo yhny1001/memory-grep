@@ -223,12 +223,49 @@ function leadingSystemMessages(chat) {
     return result;
 }
 
-function trailingConversationMessages(chat, maxItems) {
-    const pool = chat.filter((message) => {
+const PRESET_TAG_RE = /^<(overall-rules|writing-guidelines|rear-functions|now-player-input|system|chat-history|world-info|character-description|character-personality|scenario|persona|jailbreak)\b/i;
+const PRESET_BRACKET_RE = /^[【〖][^】〗]{0,40}(要求|规则|约束|准则|模式|功能|说明|提示|纲要|指令)[】〗]/;
+
+function isLikelyPresetUser(message) {
+    if (getRole(message) !== 'user') return false;
+    const text = extractTextFromContent(message?.content).trim();
+    if (!text) return false;
+    if (text.length < 60) return false; // short = real user input
+    if (PRESET_TAG_RE.test(text)) return true;
+    if (PRESET_BRACKET_RE.test(text)) return true;
+    // 兜底启发式：role=user 但内容很长（>1500 字），几乎肯定是 character preset / jailbreak / system-as-user
+    if (text.length > 1500) return true;
+    return false;
+}
+
+/**
+ * 把 chat 中除 leading systems 之外的部分拆成
+ *  - realDialog: 真实对话历史（user/assistant，按原顺序）
+ *  - presetBlock: 被识别为 character preset / jailbreak / 长系统提示的 user 消息（按原顺序）
+ *
+ * 真实对话只取最后 maxRealItems 条；preset block 全部保留（不占 maxRealItems 配额）。
+ * 返回 [...recentRealDialog, ...presetBlock]，保持 preset 在末尾的常规 OAI 顺序。
+ */
+function partitionConversation(chat, headCount, maxRealItems) {
+    const body = chat.slice(headCount);
+    const realDialog = [];
+    const presetBlock = [];
+    for (const message of body) {
         const role = getRole(message);
-        return role === 'user' || role === 'assistant';
-    });
-    return maxItems > 0 ? pool.slice(-maxItems) : pool;
+        if (role !== 'user' && role !== 'assistant') continue;
+        if (isLikelyPresetUser(message)) {
+            presetBlock.push(message);
+        } else {
+            realDialog.push(message);
+        }
+    }
+    const recentReal = maxRealItems > 0 ? realDialog.slice(-maxRealItems) : realDialog;
+    return {
+        recentReal,
+        presetBlock,
+        realDialogTotal: realDialog.length,
+        presetTotal: presetBlock.length,
+    };
 }
 
 async function getChatSearchHits(query) {
@@ -378,6 +415,13 @@ async function buildWorldInfoContentBlock() {
 
 function buildAgentPolicyMessage(worldBlock, historyBlock) {
     const rules = [
+        '⚠️⚠️⚠️ **HARD RULE — 必读第一行**: 你这一轮的第一个动作**必须是 tool_call**（不能是 reasoning，不能是 text）。',
+        '即使你需要长篇思考与创作规划，也**先**调用一个轻量工具启动流程（例如 workspace_list_files），',
+        '再在后续轮里继续深度推理。违反会触发 TT drift_recovery，',
+        '你 round-001 的完整 reasoning（包括你对 character preset 的所有解读、剧情规划、维度标签）',
+        '将被**全部丢弃**，并在 prompt 末尾追加一条 nudge "produce the answer through workspace_write_file" — ',
+        '这条 nudge 不包含 character preset 的任何要求，你会在仓促状态下直接出短回复，严重降低输出质量。',
+        '',
         '【记忆约束 / Memory Constraints — Agent Mode】',
         '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
         '',
@@ -489,7 +533,11 @@ function logMutateHeader(mode, dryRun, before, extras) {
 
 async function mutateForAgent(chat, dryRun) {
     const head = leadingSystemMessages(chat);
-    const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
+    const { recentReal, presetBlock, realDialogTotal, presetTotal } = partitionConversation(
+        chat,
+        head.length,
+        settings.recentTurns * 2,
+    );
     const before = chat.length;
 
     const [worldBlock, windowInfo] = await Promise.all([
@@ -499,13 +547,19 @@ async function mutateForAgent(chat, dryRun) {
         }),
         getChatWindowInfo(),
     ]);
-    const historyBlock = formatHistoryRangeBlock(windowInfo, recent.length);
+    const historyBlock = formatHistoryRangeBlock(windowInfo, recentReal.length);
     const policyMsg = buildAgentPolicyMessage(worldBlock, historyBlock);
 
     if (settings.debug) {
         logMutateHeader('agent', dryRun, before, {
             note: 'agent path: no pre-grep; agent will self-issue chat_search/chat_read_messages',
             windowInfo,
+            partition: {
+                head: head.length,
+                realDialogTotal,
+                recentRealKept: recentReal.length,
+                presetTotal,
+            },
             historyBlock,
             worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
             policyMessage: '\n' + truncateForDebug(policyMsg.content, 2000),
@@ -514,7 +568,7 @@ async function mutateForAgent(chat, dryRun) {
         console.groupEnd();
     }
 
-    chat.splice(0, chat.length, ...head, policyMsg, ...recent);
+    chat.splice(0, chat.length, ...head, policyMsg, ...recentReal, ...presetBlock);
 
     if (settings.debug) {
         console.groupCollapsed(`[memory-grep] ✅ mutate done (agent)  after=${chat.length}`);
@@ -528,7 +582,11 @@ async function mutateForAgent(chat, dryRun) {
 async function mutateForChat(chat, dryRun) {
     const query = lastUserContent(chat);
     const head = leadingSystemMessages(chat);
-    const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
+    const { recentReal, presetBlock, realDialogTotal, presetTotal } = partitionConversation(
+        chat,
+        head.length,
+        settings.recentTurns * 2,
+    );
     const before = chat.length;
 
     const [grepBlock, worldBlock, windowInfo] = await Promise.all([
@@ -539,13 +597,19 @@ async function mutateForChat(chat, dryRun) {
         }),
         getChatWindowInfo(),
     ]);
-    const historyBlock = formatHistoryRangeBlock(windowInfo, recent.length);
+    const historyBlock = formatHistoryRangeBlock(windowInfo, recentReal.length);
     const policyMsg = buildChatPolicyMessage(worldBlock, grepBlock, historyBlock);
 
     if (settings.debug) {
         logMutateHeader('chat', dryRun, before, {
             lastUserText: truncateForDebug(query, 400),
             windowInfo,
+            partition: {
+                head: head.length,
+                realDialogTotal,
+                recentRealKept: recentReal.length,
+                presetTotal,
+            },
             historyBlock,
             worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
             grepBlock: '\n' + truncateForDebug(grepBlock, 800),
@@ -555,7 +619,7 @@ async function mutateForChat(chat, dryRun) {
         console.groupEnd();
     }
 
-    chat.splice(0, chat.length, ...head, policyMsg, ...recent);
+    chat.splice(0, chat.length, ...head, policyMsg, ...recentReal, ...presetBlock);
 
     if (settings.debug) {
         console.groupCollapsed(`[memory-grep] ✅ mutate done (chat)  after=${chat.length}`);
@@ -625,5 +689,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.9 initialized (history scope uses post-plugin-cut visible range, not raw TT windowStartIndex)');
+    log('v0.1.10 initialized (character preset no longer competes for recentTurns quota; HARD RULE to reduce drift_recovery)');
 }
