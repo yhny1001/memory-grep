@@ -490,38 +490,16 @@ function buildHardRuleTail() {
 function buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock = '') {
     const rules = [
         '【记忆约束 / Memory Constraints — Agent Mode】',
-        '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
+        '你的上下文已被 plugin 压缩。[历史范围] 告诉你哪些 message index 在窗口外；',
+        'plugin 还自动用本轮用户输入跑了 chat.search，结果在 [早期相关片段]。',
+        '',
+        '* **优先消费 [早期相关片段] 的 snippet**，绝大多数任务都够用。',
+        '* snippet 被截断 / 需要更长上下文：chat_read_messages([{index:<#>, start_char:0, max_chars:2500}])。',
+        '  单条 ≤3000，一批累计 ≤20000，禁止裸读整条（后端硬上限 8000）。',
+        '* [早期相关片段] 没命中你要的：重新 chat_search(query="<2~6 关键词>", limit=5)。query 用名词/事件名，不要灌原话。',
+        '* 历史里没有就如实说"未在历史中找到"，禁止编造。',
         '',
         historyBlock,
-        '',
-        '## 何时启用本检索协议',
-        '   • ✅ 启用：用户问题涉及窗口外历史（角色背景、过往事件、特定对话、远期设定细节等），且最近聊天窗口、[早期相关片段] 和 [世界观] 都覆盖不到所需信息。',
-        '   • ❌ 跳过：plugin 注入的 [早期相关片段] 已经够、上一轮 assistant 完整回复仍在窗口里、或问题只需要最近上下文。此时直接进入你的正常工具链即可，无需调用任何 chat.* 检索工具。',
-        '',
-        '## 检索协议（启用时按此顺序）',
-        '',
-        '步骤 1 — chat_search（先搜不读）',
-        '   • 工具调用: chat_search(query="<2~6 个关键词>", limit=5)',
-        '   • query 要精炼，不要灌整句用户原话；中文场景多用名词/专有名词/事件名。',
-        '   • 返回每个 hit 含 index、role、score、snippet、ref。**snippet 已经是命中位置周围的切片**。',
-        '',
-        '步骤 2 — 优先消费 snippet（极其重要，节省 token）',
-        '   • 大多数情况：snippet 已经够回答。直接基于 snippet 总结，**不要再调 chat_read_messages**。',
-        '   • 只有当 snippet 被截断、明显不完整、需要更多前后文，才进入步骤 3。',
-        '',
-        '步骤 3 — chat_read_messages（精读，严格分块）',
-        '   • 一次最多读 3 条 index；按 hit.score 高的优先。',
-        '   • 每条 **必须** 显式带 max_chars，**强烈推荐 2000~3000**。**严禁** max_chars ≥ 8000 或不带 max_chars（后端单条硬上限 8000，一次 batch 累计 20000，超过会被拒）。',
-        '   • 不知道精确位置时可 start_char=0 + max_chars=2000；想看后段再调一次 start_char=2000 + max_chars=2000。',
-        '   • 调用形如：chat_read_messages(messages=[{index: 12, start_char: 0, max_chars: 2500}, {index: 18, start_char: 0, max_chars: 2000}])',
-        '',
-        '步骤 4 — 终止检索',
-        '   • 找到答案立即停止 chat.* 调用，进入正常写作工具链。',
-        '   • 一轮没找到换关键词重试 1~2 次；仍无结果在最终输出中如实告知"未在历史中找到相关记录"，**禁止编造**。',
-        '',
-        '## 输出规范',
-        '   • 引用历史片段时用 [#index] 标注来源（index 即 hit.index）。',
-        '   • 不要在正文里复述本约束。',
     ];
 
     const earlySection = earlyContextBlock
@@ -769,5 +747,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.15 initialized (drift defense removed; focus on grep correctness + [#X] audit signal)');
+    log('v0.1.16 initialized (policy slimmed: retrieval protocol from 25 lines to 8; grep-only)');
 }
