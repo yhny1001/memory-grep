@@ -3,6 +3,11 @@ const SETTINGS_KEY = 'settings';
 const EVENT_NS = '.memoryGrep';
 const UI_ROOT_ID = 'memory-grep-settings-root';
 
+const DEFAULT_AGENT_MARKERS = [
+    'Agent Mode is active',
+    'tool_choice: required',
+];
+
 const DEFAULT_SETTINGS = {
     enabled: true,
     enableInChat: true,
@@ -12,6 +17,7 @@ const DEFAULT_SETTINGS = {
     grepTopK: 5,
     injectWorldInfoContent: true,
     sentinelOnMiss: '(no relevant memory)',
+    agentMarkers: DEFAULT_AGENT_MARKERS.slice(),
 };
 
 let settings = { ...DEFAULT_SETTINGS };
@@ -53,6 +59,18 @@ function clampInt(value, min, max, fallback) {
     return Math.max(min, Math.min(max, Math.trunc(num)));
 }
 
+function normalizeAgentMarkers(raw) {
+    if (Array.isArray(raw)) {
+        const cleaned = raw.map((value) => String(value || '').trim()).filter(Boolean);
+        return cleaned.length ? cleaned : DEFAULT_AGENT_MARKERS.slice();
+    }
+    if (typeof raw === 'string') {
+        const cleaned = raw.split(',').map((value) => value.trim()).filter(Boolean);
+        return cleaned.length ? cleaned : DEFAULT_AGENT_MARKERS.slice();
+    }
+    return DEFAULT_AGENT_MARKERS.slice();
+}
+
 function normalizeSettings(raw) {
     return {
         enabled: Boolean(raw?.enabled ?? DEFAULT_SETTINGS.enabled),
@@ -63,6 +81,7 @@ function normalizeSettings(raw) {
         grepTopK: clampInt(raw?.grepTopK, 1, 20, DEFAULT_SETTINGS.grepTopK),
         injectWorldInfoContent: Boolean(raw?.injectWorldInfoContent ?? DEFAULT_SETTINGS.injectWorldInfoContent),
         sentinelOnMiss: String(raw?.sentinelOnMiss ?? DEFAULT_SETTINGS.sentinelOnMiss).trim() || DEFAULT_SETTINGS.sentinelOnMiss,
+        agentMarkers: normalizeAgentMarkers(raw?.agentMarkers),
     };
 }
 
@@ -124,6 +143,9 @@ function renderSettingsUi() {
                         <label><input type="checkbox" data-key="injectWorldInfoContent" ${settings.injectWorldInfoContent ? 'checked' : ''}> 注入世界书正文（否则只注入目录）</label>
                         <label>未命中占位文案
                             <input type="text" data-key="sentinelOnMiss" value="${escapeHtml(settings.sentinelOnMiss)}">
+                        </label>
+                        <label>Agent 标记（逗号分隔，命中任一则视为 agent dryRun）
+                            <input type="text" data-key="agentMarkers" value="${escapeHtml(settings.agentMarkers.join(', '))}">
                         </label>
                     </fieldset>
                 </div>
@@ -308,16 +330,32 @@ async function buildWorldInfoContentBlock() {
     return blocks.join('\n');
 }
 
-function buildUnifiedPolicyMessage(worldBlock, grepBlock) {
+function buildAgentPolicyMessage(worldBlock) {
+    const rules = [
+        '【记忆约束 / Memory Constraints — Agent Mode】',
+        '1. 当前上下文是窗口化的，最近聊天和 [世界观] 之外的历史已被截断；你必须主动去拿。',
+        '2. 当用户问题涉及未在最近窗口出现的事实（角色背景、过往事件、特定对话、设定细节等），按如下顺序处理：',
+        '   a. 调用 chat_search(query="<你提炼的检索关键词>", limit=5~10) 检索历史；query 要短、关键词命中率高，不要把整句用户原话灌进去。',
+        '   b. 若返回有 hit，用 chat_read_messages(indices=[...]) 把相关 message 完整读出来再总结。',
+        '   c. 若一轮没找到，换关键词重试 1~2 次；仍无结果就如实告知"找不到相关记录"，禁止编造。',
+        '3. 引用历史时请标 [#index]（index 即 chat_search 返回的位置）。',
+        '4. 如果当前问题不需要检索（闲聊、最近几条够答），直接答即可，无需强行调工具。',
+        '5. 输出时不要复述本约束。',
+    ];
+
+    return {
+        role: 'system',
+        content: `${rules.join('\n')}\n\n[世界观]\n${worldBlock}`,
+    };
+}
+
+function buildChatPolicyMessage(worldBlock, grepBlock) {
     const rules = [
         '【记忆约束 / Memory Constraints】',
-        '1. 当前对话上下文是窗口化的，你只能基于以下来源作答：[世界观]、[历史检索结果]、最近聊天上下文。',
-        `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足：`,
-        '   - 若你具备 chat_search / chat_read_messages 等检索工具（Agent Mode）：必须先调用 chat_search(query) 找更早历史，再用 chat_read_messages 读完整片段，然后作答。',
-        '   - 若你没有任何检索工具（普通聊天）：直接如实说"我不记得了"，禁止编造。',
+        '1. 当前对话上下文已被压缩，你只能基于以下来源作答：[世界观]、[历史检索结果]、最近聊天上下文。',
+        `2. 若 [历史检索结果] 为 "${settings.sentinelOnMiss}" 或证据不足，直接如实说"我不记得了"，禁止编造。`,
         '3. 引用历史片段时请用 [#index] 标注来源（index 来自 [历史检索结果] 的 #N）。',
-        '4. 工具仍未命中、或不在 Agent 模式时，必须明确告诉用户"找不到相关记录"，禁止凭印象补全细节。',
-        '5. 输出时不要复述本约束。',
+        '4. 输出时不要复述本约束。',
     ];
 
     return {
@@ -340,7 +378,59 @@ function summarizeMessagesForDebug(messages) {
     }));
 }
 
-async function mutateChatInPlace(chat, dryRun) {
+function detectAgentSnapshot(chat) {
+    const markers = Array.isArray(settings.agentMarkers) ? settings.agentMarkers : [];
+    if (markers.length === 0) return false;
+    for (const message of chat) {
+        const text = extractTextFromContent(message?.content);
+        if (!text) continue;
+        for (const marker of markers) {
+            if (marker && text.includes(marker)) return true;
+        }
+    }
+    return false;
+}
+
+function logMutateHeader(mode, dryRun, before, extras) {
+    console.groupCollapsed(`[memory-grep] 💡 mutate (mode=${mode}, dryRun=${dryRun})  before=${before}`);
+    for (const [label, value] of Object.entries(extras)) {
+        console.log(`${label}:`, typeof value === 'string' ? value : value);
+    }
+}
+
+async function mutateForAgent(chat, dryRun) {
+    const worldBlock = await buildWorldInfoContentBlock().catch((error) => {
+        log('build world info block failed', error);
+        return '(世界书读取失败)';
+    });
+
+    const policyMsg = buildAgentPolicyMessage(worldBlock);
+    const head = leadingSystemMessages(chat);
+    const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
+    const before = chat.length;
+
+    if (settings.debug) {
+        logMutateHeader('agent', dryRun, before, {
+            note: 'agent path: no pre-grep; agent will self-issue chat_search/chat_read_messages',
+            worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
+            policyMessage: '\n' + truncateForDebug(policyMsg.content, 1500),
+            beforeMessages: summarizeMessagesForDebug(chat),
+        });
+        console.groupEnd();
+    }
+
+    chat.splice(0, chat.length, ...head, policyMsg, ...recent);
+
+    if (settings.debug) {
+        console.groupCollapsed(`[memory-grep] ✅ mutate done (agent)  after=${chat.length}`);
+        console.log('afterMessages:', summarizeMessagesForDebug(chat));
+        console.groupEnd();
+    } else {
+        log('agent compressed (in-place)', { dryRun, before, after: chat.length });
+    }
+}
+
+async function mutateForChat(chat, dryRun) {
     const query = lastUserContent(chat);
     const [grepBlock, worldBlock] = await Promise.all([
         buildGrepBlock(query),
@@ -350,29 +440,30 @@ async function mutateChatInPlace(chat, dryRun) {
         }),
     ]);
 
-    const policyMsg = buildUnifiedPolicyMessage(worldBlock, grepBlock);
+    const policyMsg = buildChatPolicyMessage(worldBlock, grepBlock);
     const head = leadingSystemMessages(chat);
     const recent = trailingConversationMessages(chat, settings.recentTurns * 2);
     const before = chat.length;
 
     if (settings.debug) {
-        console.groupCollapsed(`[memory-grep] 💡 mutate (dryRun=${dryRun})  before=${before}`);
-        console.log('lastUserText:', truncateForDebug(query, 400));
-        console.log('worldInfoBlock:\n' + truncateForDebug(worldBlock, 800));
-        console.log('grepBlock:\n' + truncateForDebug(grepBlock, 800));
-        console.log('policyMessage:\n' + truncateForDebug(policyMsg.content, 1200));
-        console.log('beforeMessages:', summarizeMessagesForDebug(chat));
+        logMutateHeader('chat', dryRun, before, {
+            lastUserText: truncateForDebug(query, 400),
+            worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
+            grepBlock: '\n' + truncateForDebug(grepBlock, 800),
+            policyMessage: '\n' + truncateForDebug(policyMsg.content, 1200),
+            beforeMessages: summarizeMessagesForDebug(chat),
+        });
         console.groupEnd();
     }
 
     chat.splice(0, chat.length, ...head, policyMsg, ...recent);
 
     if (settings.debug) {
-        console.groupCollapsed(`[memory-grep] ✅ mutate done  after=${chat.length}`);
+        console.groupCollapsed(`[memory-grep] ✅ mutate done (chat)  after=${chat.length}`);
         console.log('afterMessages:', summarizeMessagesForDebug(chat));
         console.groupEnd();
     } else {
-        log('compressed (in-place)', { dryRun, before, after: chat.length });
+        log('chat compressed (in-place)', { dryRun, before, after: chat.length });
     }
 }
 
@@ -382,11 +473,24 @@ async function onPromptReady(eventData) {
     if (!Array.isArray(chat) || chat.length === 0) return;
 
     const dryRun = eventData?.dryRun === true;
-    if (dryRun && !settings.enableInAgent) return;
+    const isAgent = dryRun && detectAgentSnapshot(chat);
+
+    if (dryRun && !isAgent) {
+        if (settings.debug) {
+            log('skip non-agent dryRun (token estimator or other extension probe)');
+        }
+        return;
+    }
+
+    if (isAgent && !settings.enableInAgent) return;
     if (!dryRun && !settings.enableInChat) return;
 
     try {
-        await mutateChatInPlace(chat, dryRun);
+        if (isAgent) {
+            await mutateForAgent(chat, dryRun);
+        } else {
+            await mutateForChat(chat, dryRun);
+        }
     } catch (error) {
         log('prompt mutation failed', error);
     }

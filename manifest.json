@@ -6,8 +6,8 @@
   "js": "entry.js",
   "css": "style.css",
   "author": "yhny1001",
-  "version": "0.1.3",
-  "description": "Short-window memory compression with grep retrieval. Unified policy works in both normal chat and TT Agent Mode (tool-aware).",
+  "version": "0.1.4",
+  "description": "Memory compression for TauriTavern. Agent-mode: short window + tool-driven retrieval policy (chat_search / chat_read_messages). Chat-mode: short window + pre-grep fallback with sentinel.",
   "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {
     "activate": "init"
