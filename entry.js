@@ -230,7 +230,7 @@ function isLikelyPresetUser(message) {
     if (getRole(message) !== 'user') return false;
     const text = extractTextFromContent(message?.content).trim();
     if (!text) return false;
-    if (text.length < 60) return false; // short = real user input
+    // XML tag 包裹（含 ST 注入的 <now-player-input>）/ 中文 bracket 是 preset 的强信号，不论长短
     if (PRESET_TAG_RE.test(text)) return true;
     if (PRESET_BRACKET_RE.test(text)) return true;
     // 兜底启发式：role=user 但内容很长（>1500 字），几乎肯定是 character preset / jailbreak / system-as-user
@@ -762,5 +762,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.12 initialized (fix: lastUserContent now reads from partition.recentReal so query is not polluted by trailing character preset)');
+    log('v0.1.13 initialized (fix: short <now-player-input> wrapper no longer escapes preset detection)');
 }
