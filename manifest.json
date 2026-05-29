@@ -1,0 +1,15 @@
+{
+  "display_name": "Memory Grep",
+  "loading_order": 60,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "yepeijin-s",
+  "version": "0.1.0",
+  "description": "Short-window memory compression with grep retrieval for chat and agent mode.",
+  "homePage": "https://github.com/yepeijin-s/memory-grep",
+  "hooks": {
+    "activate": "init"
+  }
+}
