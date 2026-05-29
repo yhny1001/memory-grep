@@ -130,7 +130,7 @@ function renderSettingsUi() {
                     <fieldset>
                         <label><input type="checkbox" data-key="enabled" ${settings.enabled ? 'checked' : ''}> 启用插件</label>
                         <label><input type="checkbox" data-key="enableInChat" ${settings.enableInChat ? 'checked' : ''}> 普通聊天启用</label>
-                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用 (dryRun=true 路径)</label>
+                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用（检测到 agent system prompt markers 时注入分块检索协议）</label>
                         <label><input type="checkbox" data-key="debug" ${settings.debug ? 'checked' : ''}> Debug 输出 (console.group 详情)</label>
                     </fieldset>
                     <fieldset>
@@ -333,14 +333,32 @@ async function buildWorldInfoContentBlock() {
 function buildAgentPolicyMessage(worldBlock) {
     const rules = [
         '【记忆约束 / Memory Constraints — Agent Mode】',
-        '1. 当前上下文是窗口化的，最近聊天和 [世界观] 之外的历史已被截断；你必须主动去拿。',
-        '2. 当用户问题涉及未在最近窗口出现的事实（角色背景、过往事件、特定对话、设定细节等），按如下顺序处理：',
-        '   a. 调用 chat_search(query="<你提炼的检索关键词>", limit=5~10) 检索历史；query 要短、关键词命中率高，不要把整句用户原话灌进去。',
-        '   b. 若返回有 hit，用 chat_read_messages(indices=[...]) 把相关 message 完整读出来再总结。',
-        '   c. 若一轮没找到，换关键词重试 1~2 次；仍无结果就如实告知"找不到相关记录"，禁止编造。',
-        '3. 引用历史时请标 [#index]（index 即 chat_search 返回的位置）。',
-        '4. 如果当前问题不需要检索（闲聊、最近几条够答），直接答即可，无需强行调工具。',
-        '5. 输出时不要复述本约束。',
+        '当前对话上下文已被压缩：你只能看到 [世界观] 和最近少量聊天。历史不在窗口里 — 需要时主动按下面的"grep 分块协议"取，**不要一次抓整条消息**。',
+        '',
+        '## 检索协议（强制顺序）',
+        '步骤 1 — chat_search（先搜不读）',
+        '   • 工具调用: chat_search(query="<2~6 个关键词>", limit=5)',
+        '   • query 要精炼，不要灌整句用户原话；中文场景多用名词/专有名词/事件名。',
+        '   • 返回包含 hit 数组，每个 hit 含 index、role、score、snippet、ref。**snippet 已经是命中位置周围的切片**。',
+        '',
+        '步骤 2 — 优先消费 snippet（极其重要，节省 token）',
+        '   • 大多数问题：snippet 已经够回答。直接基于 snippet 总结，**不要再调 chat_read_messages**。',
+        '   • 只有当 snippet 被截断、明显不完整、需要更多前后文，才进入步骤 3。',
+        '',
+        '步骤 3 — chat_read_messages（精读，严格分块）',
+        '   • 一次最多读 3 条 index；按 hit.score 高的优先。',
+        '   • 每条 **必须** 显式带 max_chars，**强烈推荐 2000~3000**。**严禁** max_chars ≥ 8000 或不带 max_chars（后端单条上限 8000，一次累计 20000，否则报错）。',
+        '   • 不知道精确位置时可用 start_char=0 + max_chars=2000；想看后段就再调一次 start_char=2000 + max_chars=2000。',
+        '   • 调用形如：chat_read_messages(messages=[{index: 12, start_char: 0, max_chars: 2500}, {index: 18, start_char: 0, max_chars: 2000}])',
+        '',
+        '步骤 4 — 终止',
+        '   • 找到答案立即停止检索，开始回答。',
+        '   • 一轮没找到换关键词重试 1~2 次；仍无结果如实告知"未在历史中找到相关记录"，**禁止编造**。',
+        '',
+        '## 输出规范',
+        '   • 引用历史片段时用 [#index] 标注来源（index 即 hit.index）。',
+        '   • 闲聊或最近上下文已足够时直接答，不必硬调工具。',
+        '   • 不要复述本约束。',
     ];
 
     return {
@@ -473,17 +491,17 @@ async function onPromptReady(eventData) {
     if (!Array.isArray(chat) || chat.length === 0) return;
 
     const dryRun = eventData?.dryRun === true;
-    const isAgent = dryRun && detectAgentSnapshot(chat);
 
-    if (dryRun && !isAgent) {
+    if (dryRun) {
         if (settings.debug) {
-            log('skip non-agent dryRun (token estimator or other extension probe)');
+            log('skip dryRun (token estimator / extension probe, not real request)');
         }
         return;
     }
 
+    const isAgent = detectAgentSnapshot(chat);
     if (isAgent && !settings.enableInAgent) return;
-    if (!dryRun && !settings.enableInChat) return;
+    if (!isAgent && !settings.enableInChat) return;
 
     try {
         if (isAgent) {
@@ -515,5 +533,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('initialized');
+    log('v0.1.5 initialized (agent=dryRun=false+markers; snippet-first protocol)');
 }

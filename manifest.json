@@ -6,8 +6,8 @@
   "js": "entry.js",
   "css": "style.css",
   "author": "yhny1001",
-  "version": "0.1.4",
-  "description": "Memory compression for TauriTavern. Agent-mode: short window + tool-driven retrieval policy (chat_search / chat_read_messages). Chat-mode: short window + pre-grep fallback with sentinel.",
+  "version": "0.1.5",
+  "description": "Memory compression for TauriTavern. Detects agent runtime via prompt markers (dryRun=false path) and injects a chunked retrieval protocol: snippet-first via chat_search, only fall back to chat_read_messages with small max_chars (2-3k) ranges. Chat-mode keeps pre-grep + sentinel fallback.",
   "homePage": "https://github.com/yhny1001/memory-grep",
   "hooks": {
     "activate": "init"
