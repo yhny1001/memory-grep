@@ -3,6 +3,9 @@ const SETTINGS_KEY = 'settings';
 const EVENT_NS = '.memoryGrep';
 const UI_ROOT_ID = 'memory-grep-settings-root';
 
+const AGENT_SYSTEM_NAMESPACE = 'agent-system';
+const AGENT_SYSTEM_KEY = 'settings';
+
 const DEFAULT_AGENT_MARKERS = [
     'Agent Mode is active',
     'tool_choice: required',
@@ -130,7 +133,7 @@ function renderSettingsUi() {
                     <fieldset>
                         <label><input type="checkbox" data-key="enabled" ${settings.enabled ? 'checked' : ''}> 启用插件</label>
                         <label><input type="checkbox" data-key="enableInChat" ${settings.enableInChat ? 'checked' : ''}> 普通聊天启用</label>
-                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用（检测到 agent system prompt markers 时注入分块检索协议）</label>
+                        <label><input type="checkbox" data-key="enableInAgent" ${settings.enableInAgent ? 'checked' : ''}> Agent 模式启用（自动通过 agent-system 扩展开关 agentModeEnabled 检测）</label>
                         <label><input type="checkbox" data-key="debug" ${settings.debug ? 'checked' : ''}> Debug 输出 (console.group 详情)</label>
                     </fieldset>
                     <fieldset>
@@ -396,7 +399,22 @@ function summarizeMessagesForDebug(messages) {
     }));
 }
 
-function detectAgentSnapshot(chat) {
+async function isAgentModeEnabled() {
+    try {
+        const store = getTtApi()?.extension?.store;
+        if (!store?.tryGetJson) return false;
+        const res = await store.tryGetJson({
+            namespace: AGENT_SYSTEM_NAMESPACE,
+            key: AGENT_SYSTEM_KEY,
+        });
+        return Boolean(res?.found && res?.value?.agentModeEnabled);
+    } catch (error) {
+        log('isAgentModeEnabled failed', error);
+        return false;
+    }
+}
+
+function detectAgentSnapshotByMarkers(chat) {
     const markers = Array.isArray(settings.agentMarkers) ? settings.agentMarkers : [];
     if (markers.length === 0) return false;
     for (const message of chat) {
@@ -499,7 +517,18 @@ async function onPromptReady(eventData) {
         return;
     }
 
-    const isAgent = detectAgentSnapshot(chat);
+    const agentByFlag = await isAgentModeEnabled();
+    const agentByMarker = detectAgentSnapshotByMarkers(chat);
+    const isAgent = agentByFlag || agentByMarker;
+
+    if (settings.debug) {
+        log('detection', {
+            agentByFlag,
+            agentByMarker,
+            decided: isAgent ? 'agent' : 'chat',
+        });
+    }
+
     if (isAgent && !settings.enableInAgent) return;
     if (!isAgent && !settings.enableInChat) return;
 
@@ -533,5 +562,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.5 initialized (agent=dryRun=false+markers; snippet-first protocol)');
+    log('v0.1.6 initialized (agent detection: extension-store agentModeEnabled flag + marker fallback)');
 }
