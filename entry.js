@@ -601,7 +601,10 @@ async function mutateForAgent(chat, dryRun) {
         head.length,
         settings.recentTurns * 2,
     );
-    const query = lastUserContent(chat);
+    // ⚠️ 必须从 recentReal 取 query，不能从 chat 取
+    // chat 末尾是 character preset 块（也是 role=user），lastUserContent(chat)
+    // 会拿到「【思维模式要求】...」之类的 preset，导致 chat.search 用错关键词
+    const query = lastUserContent(recentReal);
     const before = chat.length;
 
     const windowInfo = await getChatWindowInfo();
@@ -649,13 +652,14 @@ async function mutateForAgent(chat, dryRun) {
 }
 
 async function mutateForChat(chat, dryRun) {
-    const query = lastUserContent(chat);
     const head = leadingSystemMessages(chat);
     const { recentReal, presetBlock, realDialogTotal, presetTotal } = partitionConversation(
         chat,
         head.length,
         settings.recentTurns * 2,
     );
+    // ⚠️ 同 mutateForAgent，必须从 recentReal 取 query 避免被 preset 污染
+    const query = lastUserContent(recentReal);
     const before = chat.length;
 
     const [grepBlock, worldBlock, windowInfo] = await Promise.all([
@@ -758,5 +762,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.11 initialized (smart pre-grep injects out-of-window snippets for long-form queries; short replies still skip)');
+    log('v0.1.12 initialized (fix: lastUserContent now reads from partition.recentReal so query is not polluted by trailing character preset)');
 }
