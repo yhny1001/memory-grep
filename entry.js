@@ -345,6 +345,65 @@ async function buildGrepBlock(query) {
     }
 }
 
+const MIN_QUERY_LEN_FOR_PREGREP = 5;
+
+/**
+ * Agent 模式下的"智能 pre-grep"：
+ *  - 短输入（< MIN_QUERY_LEN_FOR_PREGREP）或 query 为空 → 返回 ''（不注入）
+ *  - 用 lastUserContent 做 chat.search 拿 top-K hits
+ *  - 过滤掉已经在 prompt 窗口里的 hit（避免重复消耗 token）
+ *  - 返回 [早期相关片段] block；为空（如所有 hit 都在窗口里 / 真没匹配）也返回 ''
+ *
+ * 设计目的：不强制 LLM 调用 chat.search，但保证当用户连续追写剧情时 agent 一定看得到早期关键片段；
+ *           LLM 可以基于 snippet 直接用，需要更长上下文时再自行 chat_read_messages 取完整段。
+ */
+async function buildEarlyContextBlock(query, windowInfo, recentRealCount) {
+    const trimmed = String(query || '').trim();
+    if (trimmed.length < MIN_QUERY_LEN_FOR_PREGREP) {
+        return ''; // hi / 嗯 / 输出 等短反馈不触发 pre-grep
+    }
+    if (!windowInfo) return '';
+    const total = Number(windowInfo.totalCount) || 0;
+    const visibleStart = Math.max(0, total - Number(recentRealCount || 0));
+    if (visibleStart === 0) return ''; // 全部历史都在窗口里，不需要早期片段
+
+    let hits;
+    try {
+        hits = await getChatSearchHits(trimmed);
+    } catch (error) {
+        log('pre-grep failed', error);
+        return '';
+    }
+    if (!Array.isArray(hits) || hits.length === 0) return '';
+
+    // 只保留 out-of-window 的 hit
+    const outOfWindowHits = hits.filter((h) => {
+        const idx = Number(h?.index);
+        return Number.isFinite(idx) && idx < visibleStart;
+    });
+    if (outOfWindowHits.length === 0) return '';
+
+    const top = outOfWindowHits.slice(0, 3);
+    const lines = [
+        '【早期相关片段 / Early Context Snippets — plugin pre-grep】',
+        `针对用户当前输入「${trimmed.slice(0, 80)}」对窗口外 index 0..${visibleStart - 1} 做了 chat.search，命中片段（按 score 排序）：`,
+    ];
+    top.forEach((h, i) => {
+        const idx = Number.isFinite(h?.index) ? h.index : '?';
+        const role = h?.role || '?';
+        const score = Number.isFinite(h?.score) ? Number(h.score).toFixed(3) : '?';
+        const snippet = String(h?.snippet || h?.text || '').slice(0, 600);
+        lines.push('');
+        lines.push(`--- hit ${i + 1} | [#${idx}] role=${role} score=${score} ---`);
+        lines.push(snippet);
+    });
+    lines.push('');
+    lines.push(
+        '> 这些 snippet 已是命中位置周围切片，**优先直接消费**；只有 snippet 明显不完整时再 chat_read_messages([{index:<#>,start_char:0,max_chars:2500}]) 取更长段。如果上面片段已够，无需再调 chat.* 工具。',
+    );
+    return lines.join('\n');
+}
+
 async function getWorldInfoModule() {
     if (!worldInfoModulePromise) {
         worldInfoModulePromise = import('/scripts/world-info.js');
@@ -413,7 +472,7 @@ async function buildWorldInfoContentBlock() {
     return blocks.join('\n');
 }
 
-function buildAgentPolicyMessage(worldBlock, historyBlock) {
+function buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock = '') {
     const rules = [
         '⚠️⚠️⚠️ **HARD RULE — 必读第一行**: 你这一轮的第一个动作**必须是 tool_call**（不能是 reasoning，不能是 text）。',
         '即使你需要长篇思考与创作规划，也**先**调用一个轻量工具启动流程（例如 workspace_list_files），',
@@ -459,9 +518,13 @@ function buildAgentPolicyMessage(worldBlock, historyBlock) {
         '   • 不要在正文里复述本约束。',
     ];
 
+    const earlySection = earlyContextBlock
+        ? `\n\n${earlyContextBlock}`
+        : '';
+
     return {
         role: 'system',
-        content: `${rules.join('\n')}\n\n[世界观]\n${worldBlock}`,
+        content: `${rules.join('\n')}${earlySection}\n\n[世界观]\n${worldBlock}`,
     };
 }
 
@@ -538,21 +601,24 @@ async function mutateForAgent(chat, dryRun) {
         head.length,
         settings.recentTurns * 2,
     );
+    const query = lastUserContent(chat);
     const before = chat.length;
 
-    const [worldBlock, windowInfo] = await Promise.all([
+    const windowInfo = await getChatWindowInfo();
+    const [worldBlock, earlyContextBlock] = await Promise.all([
         buildWorldInfoContentBlock().catch((error) => {
             log('build world info block failed', error);
             return '(世界书读取失败)';
         }),
-        getChatWindowInfo(),
+        buildEarlyContextBlock(query, windowInfo, recentReal.length),
     ]);
     const historyBlock = formatHistoryRangeBlock(windowInfo, recentReal.length);
-    const policyMsg = buildAgentPolicyMessage(worldBlock, historyBlock);
+    const policyMsg = buildAgentPolicyMessage(worldBlock, historyBlock, earlyContextBlock);
 
     if (settings.debug) {
         logMutateHeader('agent', dryRun, before, {
-            note: 'agent path: no pre-grep; agent will self-issue chat_search/chat_read_messages',
+            note: 'agent path: smart pre-grep on lastUserContent; agent may further chat_read_messages on demand',
+            lastUserText: truncateForDebug(query, 200),
             windowInfo,
             partition: {
                 head: head.length,
@@ -561,8 +627,11 @@ async function mutateForAgent(chat, dryRun) {
                 presetTotal,
             },
             historyBlock,
+            earlyContextBlock: earlyContextBlock
+                ? '\n' + truncateForDebug(earlyContextBlock, 1200)
+                : '(no pre-grep injection: query too short / no out-of-window hits)',
             worldInfoBlock: '\n' + truncateForDebug(worldBlock, 800),
-            policyMessage: '\n' + truncateForDebug(policyMsg.content, 2000),
+            policyMessage: '\n' + truncateForDebug(policyMsg.content, 2500),
             beforeMessages: summarizeMessagesForDebug(chat),
         });
         console.groupEnd();
@@ -689,5 +758,5 @@ export async function init() {
         eventSource.removeListener(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
     }
     eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onPromptReady);
-    log('v0.1.10 initialized (character preset no longer competes for recentTurns quota; HARD RULE to reduce drift_recovery)');
+    log('v0.1.11 initialized (smart pre-grep injects out-of-window snippets for long-form queries; short replies still skip)');
 }
